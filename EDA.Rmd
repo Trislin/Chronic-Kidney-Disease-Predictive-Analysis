@@ -1,0 +1,1044 @@
+---
+title: "ESRD Analysis"
+author: "Trista"
+date: "6/15/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+### Load packages
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(readr)
+#library(plyr)
+library(dplyr)
+library(data.table)
+library(purrr)
+```
+### Import Data
+```{r}
+mydir = "cleaned_data"
+myfiles = list.files(path=mydir, pattern="*.csv", full.names=TRUE)
+myColumns = c("claim_type","line_number","place_service","eacl_prv_alcrg_at","proc_code","pri_diag_cd","admitting_diag_cd","dx1","dx2","dx3","dx4","dx5","dx6","dx7","dx8","dx9","dx10","dx11","dx12","dx13","dx14","dx15","dx16","dx17","dx18","dx19","dx20","dx21","dx22","dx23","dx24","TMA_Acct","icrd_dt_deidentified")
+fread_allfiles <- function(file, columns){
+  x <- fread(file, select = columns) %>% 
+    select(everything())   # 
+  return(x)
+}
+
+df <- myfiles %>% 
+  map_df(~ fread_allfiles(.,myColumns))
+
+```
+
+```{r}
+df = map_dfr(myfiles, read_csv, col_types = cols(.default = col_character(), "dx1" = col_character(),"dx2" = col_character(),"dx3" = col_character(),"dx4" = col_character(),"dx5" = col_character(),"dx6" = col_character(),"dx7" = col_character(),"dx8" = col_character(),"dx9" = col_character(), "dx10" = col_character(), "dx11" = col_character(), "dx12" = col_character(), "dx13" = col_character(), "dx14" = col_character(), "dx15" = col_character(), "dx16" = col_character(), "dx17" = col_character(), "dx18" = col_character(), "dx19" = col_character(), "dx20" = col_character(), "dx21" = col_character(), "dx22" = col_character(), "dx23" = col_character(), "dx24" = col_character(), "admission_source" = col_character(), "ip_prn_proc_code" = col_character(), "ip_other_proc1" = col_character(), "ip_other_proc2" = col_character(), "ip_other_proc3" = col_character(), "ip_other_proc4" = col_character(), "ip_other_proc5" = col_character(), "ip_other_proc6" = col_character(), "ip_other_proc7" = col_character(), "ip_other_proc8" = col_character(), "ip_other_proc9" = col_character(), "ip_other_proc10" = col_character(), "admitting_diag_cd" = col_character()))
+head(df)
+```
+###Data Preparation 
+## Sample Selection
+# Total number of patients
+```{r}
+length(unique(df$TMA_Acct))
+```
+# List of diagnosis variable 
+```{r}
+diag_var<-c("pri_diag_cd","admitting_diag_cd","dx1",'dx2','dx3','dx4','dx5','dx6','dx7','dx8','dx9','dx10','dx11','dx12','dx13','dx14','dx15','dx16','dx17','dx18','dx19','dx20','dx21','dx22','dx23','dx24')
+
+```
+
+# Number of patients with stage 3 CKD
+```{r}
+stage3_record<-df%>%filter_at(vars(all_of(diag_var)),any_vars(.=="N183"|.=="5853"))
+length(unique(stage3_record$TMA_Acct))
+
+stage3_patient<-df%>%filter(TMA_Acct%in%stage3_record$TMA_Acct)
+```
+ 5139 patients with stage 3 CKD
+
+# Records of first occurence of stage 3 CKD
+```{r}
+stage3_first_occ<-stage3_record%>%group_by(TMA_Acct)%>%arrange(icrd_dt_deidentified)%>%slice(1)
+
+stage3_first_occ<-stage3_first_occ%>%group_by(TMA_Acct)%>%mutate(StartDate=min(icrd_dt_deidentified, na.rm = TRUE))
+```
+
+# Records of last occurence in all records
+```{r}
+patient_last_occ<-stage3_patient%>%group_by(TMA_Acct)%>%arrange(desc(icrd_dt_deidentified))%>%slice(1)
+
+patient_last_occ<-patient_last_occ%>%group_by(TMA_Acct)%>%mutate(EndDate=max(icrd_dt_deidentified, na.rm = TRUE))
+
+```
+
+# Duration of records
+```{r}
+stage3_record_unique<-stage3_first_occ
+stage3_record_unique$EndDate<-patient_last_occ$EndDate
+stage3_record_unique$Duration<-stage3_record_unique$EndDate-stage3_record_unique$StartDate
+
+```
+
+# Number of patients with at least 2-year records starting from stage 3 CKD
+```{r}
+stage3_record_2yr<-stage3_record_unique%>%filter(Duration>365*2)
+
+```
+3206 stage 3 patients have at least 2 years of record starting from their first occurence of stage 3
+
+# Records of first occurence of transplant
+```{r}
+transplant_record<-stage3_patient%>%filter_at(vars(all_of(diag_var)),any_vars(.=="V420"|.=="Z940"))
+length(unique(transplant_record$TMA_Acct))
+transplant_first_occ<-transplant_record%>%group_by(TMA_Acct)%>%arrange(icrd_dt_deidentified)%>%slice(1)%>%mutate(transplant_start_date=icrd_dt_deidentified)%>%select(TMA_Acct,transplant_start_date)
+```
+# Records of first occurence of dialysis
+```{r}
+dialysis_proc_code<-c('90935', '90937', '90945', '90947', '90999', '99512', '90963', '90964', '90965', '90966')
+dialysis_record<-stage3_patient%>%filter(proc_code%in%dialysis_proc_code)
+length(unique(dialysis_record$TMA_Acct))
+dialysis_first_occ<-dialysis_record%>%group_by(TMA_Acct)%>%arrange(icrd_dt_deidentified)%>%slice(1)%>%mutate(dialysis_start_date=icrd_dt_deidentified)%>%select(TMA_Acct,dialysis_start_date)
+```
+# Records of first occurence of ESRD
+```{r}
+esrd_record<-stage3_patient%>%filter_at(vars(all_of(diag_var)),any_vars(.=="N186"|.=="5856"))
+length(unique(esrd_record$TMA_Acct))
+esrd_first_occ<-esrd_record%>%group_by(TMA_Acct)%>%arrange(icrd_dt_deidentified)%>%slice(1)%>%mutate(esrd_start_date=icrd_dt_deidentified)%>%select(TMA_Acct,esrd_start_date)
+```
+# Merge all datasets
+```{r}
+stage3_transplant<-merge(stage3_record_2yr,transplant_first_occ,by="TMA_Acct",all.x = TRUE)
+stage3_transplant_dialysis<-merge(stage3_transplant,dialysis_first_occ,by="TMA_Acct",all.x = TRUE)
+stage3_transplant_dialysis_esrd<-merge(stage3_transplant_dialysis,esrd_first_occ,by="TMA_Acct",all.x = TRUE)
+```
+
+# Calculate time to transplant, dialysis, and ESRD
+```{r}
+stage3_transplant_dialysis_esrd$time_to_transplant<-stage3_transplant_dialysis_esrd$transplant_start_date-stage3_transplant_dialysis_esrd$StartDate
+stage3_transplant_dialysis_esrd$time_to_dialysis<-stage3_transplant_dialysis_esrd$dialysis_start_date-stage3_transplant_dialysis_esrd$StartDate
+stage3_transplant_dialysis_esrd$time_to_esrd<-stage3_transplant_dialysis_esrd$esrd_start_date-stage3_transplant_dialysis_esrd$StartDate
+```
+
+# Records of patients who developed transplant/dialysis/ESRD within 2 years of the first occurrence of stage 3
+```{r}
+stage3_no_2yr_transplant<-stage3_transplant_dialysis_esrd%>%filter(time_to_transplant<=365*2)
+stage3_no_2yr_transplant_dialysis<-stage3_transplant_dialysis_esrd%>%filter(time_to_dialysis<=365*2)
+stage3_no_2yr_transplant_dialysis_esrd<-stage3_transplant_dialysis_esrd%>%filter(time_to_esrd<=365*2)
+
+```
+
+
+```{r}
+stage3_no_2yr_transplant%>%filter(!TMA_Acct%in%c(865.0,
+ 1471.0,
+ 2041.0,
+ 2344.0,
+ 3480.0,
+ 4016.0,
+ 4167.0,
+ 5150.0,
+ 6600.0,
+ 9617.0,
+ 9642.0,
+ 10178.0,
+ 10305.0,
+ 10636.0,
+ 10800.0,
+ 10923.0,
+ 12793.0,
+ 12821.0,
+ 13001.0,
+ 13727.0,
+ 13919.0,
+ 14354.0,
+ 15030.0,
+ 15034.0,
+ 16067.0,
+ 16397.0,
+ 16970.0,
+ 17079.0,
+ 17507.0,
+ 19709.0,
+ 19984.0,
+ 20715.0,
+ 21272.0,
+ 25509.0,
+ 26301.0,
+ 26623.0,
+ 28488.0,
+ 28610.0,
+ 30582.0,
+ 30704.0,
+ 31757.0,
+ 32034.0,
+ 34415.0,
+ 34426.0,
+ 34788.0,
+ 36447.0,
+ 38097.0,
+ 38482.0,
+ 39242.0,
+ 40282.0,
+ 42047.0,
+ 42194.0,
+ 43830.0,
+ 44165.0,
+ 44205.0,
+ 44319.0,
+ 45124.0,
+ 45574.0,
+ 45949.0,
+ 46557.0,
+ 47019.0,
+ 49555.0,
+ 49943.0,
+ 50668.0))
+```
+
+# Final patients who did not develop transplant/dialysis/ESRD within 2 years
+```{r}
+final_record<-stage3_record_2yr%>%filter(!TMA_Acct%in%stage3_no_2yr_transplant$TMA_Acct) #3130
+final_record<-final_record%>%filter(!TMA_Acct%in%stage3_no_2yr_transplant_dialysis$TMA_Acct) #3046
+final_record<-final_record%>%filter(!TMA_Acct%in%stage3_no_2yr_transplant_dialysis_esrd$TMA_Acct) #2921
+final_record<-merge(final_record,esrd_first_occ,by="TMA_Acct", all.x = TRUE)
+final_record$ESRD<-0
+final_record$ESRD[!is.na(final_record$esrd_start_date)]<-1
+```
+
+```{r}
+final_patient<-stage3_patient%>%filter(TMA_Acct%in%final_record$TMA_Acct)
+length(unique(final_patient$TMA_Acct))
+final_patient$claim_type2<-final_patient$claim_type
+```
+
+## Feature Selection/Engineering
+#Distribution of outcome
+```{r}
+final_record$ESRD<-as.factor(final_record$ESRD)
+table(final_record$ESRD)
+
+
+```
+
+```{r}
+
+ggplot(final_record, aes(x=ESRD, fill=ESRD)) + 
+  geom_bar(stat="count") +
+  scale_fill_brewer(palette = "Set2") +
+  theme_minimal() +
+  geom_text(stat='count', aes(label=..count..), vjust=-1)
+
+```
+# Derive new variable - number of each type of claims
+```{r}
+final_patient<-final_patient%>%group_by(TMA_Acct, claim_type)%>%mutate(count=n())
+final_patient$claim_type<-as.factor(final_patient$claim_type)
+final_patient<-final_patient %>% group_by(TMA_Acct, claim_type) %>% mutate(row = row_number()) %>%
+  pivot_wider(names_from = claim_type, values_from = count, names_prefix = "count_")%>%select(-row)
+
+```
+# Derive new variable - mean of each type of claims
+```{r}
+final_patient<-final_patient%>%group_by(TMA_Acct, claim_type2)%>%mutate(mean_cost=mean(eacl_prv_alcrg_at))
+final_patient$claim_type2<-as.factor(final_patient$claim_type2)
+final_patient<-final_patient %>% group_by(TMA_Acct, claim_type2) %>% mutate(row = row_number()) %>%
+  pivot_wider(names_from = claim_type2, values_from = mean_cost, names_prefix = "mean_cost_")%>%select(-row)
+```
+
+# Fill in NAs
+```{r}
+final_patient<-final_patient%>%group_by(TMA_Acct)%>%fill(count_P, count_DR, count_O, count_I, count_MM, count_V, mean_cost_P, mean_cost_DR, mean_cost_O, mean_cost_I, mean_cost_MM, mean_cost_V, .direction = "up")
+
+
+```
+# final dataset
+```{r}
+
+final_df_temp<-final_patient%>%group_by(TMA_Acct)%>%slice(1)%>%select(TMA_Acct,count_P, count_DR, count_O, count_I, count_MM, count_V, mean_cost_P, mean_cost_DR, mean_cost_O, mean_cost_I, mean_cost_MM, mean_cost_V)
+
+final_record_var<-final_record%>%select(TMA_Acct,StartDate,EndDate,esrd_start_date,ESRD)
+final_df_temp<-merge(final_df_temp,final_record_var,by="TMA_Acct")
+```
+
+## Check Collinearity
+```{r}
+library("PerformanceAnalytics")
+summary(final_df_temp)
+chart.Correlation(final_df_temp[,-c(1,17)], histogram=TRUE, pch=19)
+```
+## Check Distribution
+```{r}
+pdf("distribution of predictors.pdf",width=10)
+par(mfrow=c(3, 3))
+colnames <- dimnames(final_df_temp)[[2]]
+for (var in c(2:16)) {
+  d <- density(final_df_temp[,var],na.rm = TRUE)
+  plot(d, type="n", main=colnames[var])
+  polygon(d, col="red", border="gray")
+}
+```
+
+```{r}
+#df<-df%>%filter(icrd_dt_deidentified<=3284)
+
+
+N183_patients<-df%>%filter(TMA_Acct%in%N183_record$TMA_Acct)
+#N183_all<-df[df$TMA_Acct%in%N183$TMA_Acct,]
+length(unique(N183_patients$TMA_Acct))
+
+#5853,183
+#N183_Acct<-data.frame(TMA_Acct=unique(N183$TMA_Acct))
+#write.csv(N183_Acct,"./N183_Acct.csv")
+#N18.3 stage 3-> input = cohort -throughout the year, identify everyone who was in stage 3(first time), comorbidity, when a patient is diagnosed in stage 3, what is the likelihood that they will progress into ESRD(Y/N) or probability
+
+#come back a year later, develop two more cormobidity, probability of ESRD
+#takes 18.3 and predict 18.6 -> output
+#location, cost, top5 procedure, top 5 diagnosis 
+#descriptive stats #number of visits, total costs 
+#aggregate the cost; number of visists
+#past history PMA
+#reason for new visit percent on admission 
+#new diagnosis 
+#unique (hospitalization; or unique pharmacy claim/ claim type + date unique)
+#primary diagnosis 37
+#
+```
+Based on all diagnosis, there are 5139 patients with stage 3 CKD (ICD10 code N18.3) 
+```{r}
+MS_N183_Acct<-read.csv("CKD_TMA_Acct.csv")
+#discrepancy<-MS_N183_Acct[!MS_N183_Acct$TMA_Acct%in%N183_Acct$TMA_Acct,]
+#length(unique(discrepancy$TMA_Acct))
+
+
+#write.csv(discrepancy, "./discrepancy_TMA_Acct_N183.csv")
+#temp<-df%>%filter(TMA_Acct%in%discrepancy$TMA_Acct)
+#write.csv(temp, "./discrepancy_all.csv")
+#table(temp$TMA_Acct)
+
+N183<-df%>%filter(TMA_Acct%in%MS_N183_Acct$TMA_Acct)
+length(unique(N183$TMA_Acct))
+
+
+```
+
+Exclude patients with transplants
+```{r}
+transplant<-N183_patients%>%filter(pri_diag_cd=="V420"|admitting_diag_cd=="V420"|dx1=="V420"|dx2=="V420"|dx3=="V420"|dx4=="V420"|dx5=="V420"|dx6=="V420"|dx7=="V420"|dx8=="V420"|dx9=="V420"|dx10=="V420"|dx11=="V420"|dx12=="V420"|dx13=="V420"|dx14=="V420"|dx15=="V420"|dx16=="V420"|dx17=="V420"|dx18=="V420"|dx19=="V420"|dx20=="V420"|dx21=="V420"|dx22=="V420"|dx23=="V420"|dx24=="V420"|pri_diag_cd=="Z940"|admitting_diag_cd=="Z940"|dx1=="Z940"|dx2=="Z940"|dx3=="Z940"|dx4=="Z940"|dx5=="Z940"|dx6=="Z940"|dx7=="Z940"|dx8=="Z940"|dx9=="Z940"|dx10=="Z940"|dx11=="Z940"|dx12=="Z940"|dx13=="Z940"|dx14=="Z940"|dx15=="Z940"|dx16=="Z940"|dx17=="Z940"|dx18=="Z940"|dx19=="Z940"|dx20=="Z940"|dx21=="Z940"|dx22=="Z940"|dx23=="Z940"|dx24=="Z940")%>%select(TMA_Acct)
+
+length(unique(transplant$TMA_Acct))
+```
+
+
+```{r}
+transplant_all<-df%>%filter(pri_diag_cd=="V420"|admitting_diag_cd=="V420"|dx1=="V420"|dx2=="V420"|dx3=="V420"|dx4=="V420"|dx5=="V420"|dx6=="V420"|dx7=="V420"|dx8=="V420"|dx9=="V420"|dx10=="V420"|dx11=="V420"|dx12=="V420"|dx13=="V420"|dx14=="V420"|dx15=="V420"|dx16=="V420"|dx17=="V420"|dx18=="V420"|dx19=="V420"|dx20=="V420"|dx21=="V420"|dx22=="V420"|dx23=="V420"|dx24=="V420"|pri_diag_cd=="Z940"|admitting_diag_cd=="Z940"|dx1=="Z940"|dx2=="Z940"|dx3=="Z940"|dx4=="Z940"|dx5=="Z940"|dx6=="Z940"|dx7=="Z940"|dx8=="Z940"|dx9=="Z940"|dx10=="Z940"|dx11=="Z940"|dx12=="Z940"|dx13=="Z940"|dx14=="Z940"|dx15=="Z940"|dx16=="Z940"|dx17=="Z940"|dx18=="Z940"|dx19=="Z940"|dx20=="Z940"|dx21=="Z940"|dx22=="Z940"|dx23=="Z940"|dx24=="Z940")
+
+length(unique(transplant_all$TMA_Acct))
+
+
+transplant_all<-transplant_all%>%group_by(TMA_Acct)%>%dplyr::mutate(StartDate=min(icrd_dt_deidentified, na.rm = TRUE), EndDate=max(icrd_dt_deidentified,na.rm = TRUE), Duration = EndDate-StartDate)
+
+transplant_all_2yr<-transplant_all%>%filter(Duration>=(365*2))
+
+length(unique(transplant_all_2yr$TMA_Acct))
+
+```
+
+
+
+
+```{r}
+N183_wo_transplant<-N183_patients%>%filter(!TMA_Acct%in%transplant$TMA_Acct)
+length(unique(N183_wo_transplant$TMA_Acct))
+```
+
+
+Exclude patients with dialysis
+```{r}
+dia_proc_code<-c('90935', '90937', '90945', '90947', '90999', '99512', '90963', '90964', '90965', '90966')
+dialysis<-N183_wo_transplant%>%filter(proc_code%in%dia_proc_code)%>%select(TMA_Acct)
+length(unique(dialysis$TMA_Acct))
+
+```
+
+
+```{r}
+dialysis_all<-N183_patients%>%filter(proc_code%in%dia_proc_code)%>%select(TMA_Acct)
+
+length(unique(dialysis$TMA_Acct))
+
+
+```
+
+```{r}
+N183_wo_trans_dia<-N183_wo_transplant%>%filter(!TMA_Acct%in%dialysis$TMA_Acct)
+length(unique(N183_wo_trans_dia$TMA_Acct))
+```
+
+
+```{r}
+N186<-df%>%filter(pri_diag_cd=="N186"|admitting_diag_cd=="N186"|dx1=="N186"|dx2=="N186"|dx3=="N186"|dx4=="N186"|dx5=="N186"|dx6=="N186"|dx7=="N186"|dx8=="N186"|dx9=="N186"|dx10=="N186"|dx11=="N186"|dx12=="N186"|dx13=="N186"|dx14=="N186"|dx15=="N186"|dx16=="N186"|dx17=="N186"|dx18=="N186"|dx19=="N186"|dx20=="N186"|dx21=="N186"|dx22=="N186"|dx23=="N186"|dx24=="N186"|pri_diag_cd=="5856"|admitting_diag_cd=="5856"|dx1=="5856"|dx2=="5856"|dx3=="5856"|dx4=="5856"|dx5=="5856"|dx6=="5856"|dx7=="5856"|dx8=="5856"|dx9=="5856"|dx10=="5856"|dx11=="5856"|dx12=="5856"|dx13=="5856"|dx14=="5856"|dx15=="5856"|dx16=="5856"|dx17=="5856"|dx18=="5856"|dx19=="5856"|dx20=="5856"|dx21=="5856"|dx22=="5856"|dx23=="5856"|dx24=="5856")%>%select(TMA_Acct)
+
+length(unique(N186$TMA_Acct))
+
+```
+
+Based on all diagnosis, there are 1429 patients with ESRD
+
+
+Duration of N183 data (n=5139)
+
+```{r}
+#N183_record_wo_trans_dia <- N183_record%>%filter(TMA_Acct%in%N183_wo_trans_dia$TMA_Acct)
+#length(unique(N183_record_wo_trans_dia$TMA_Acct))
+N183_record <- N183_record%>%dplyr::group_by(TMA_Acct)%>%dplyr::mutate(StartDate=min(icrd_dt_deidentified, na.rm = TRUE), EndDate=max(icrd_dt_deidentified,na.rm = TRUE), Duration = EndDate-StartDate)
+length(unique(N183_record$TMA_Acct))
+```
+
+
+```{r}
+#N183_wo_trans_dia<-N183_wo_trans_dia%>%dplyr::group_by(TMA_Acct)%>%dplyr::mutate(StartDate=min(icrd_dt_deidentified, na.rm = TRUE), EndDate=max(icrd_dt_deidentified,na.rm = TRUE), Duration = EndDate-StartDate)
+
+max(N183_record$Duration)
+min(N183_record$Duration)
+#3695/365
+
+```
+Distribution of Duration
+```{r}
+N183_wo_trans_dia$years_of_record<-NA
+N183_wo_trans_dia$years_of_record[N183_wo_trans_dia$Duration>0&N183_wo_trans_dia$Duration<366] = "<1"
+N183_wo_trans_dia$years_of_record[N183_wo_trans_dia$Duration>365&N183_wo_trans_dia$Duration<365*2+1] = "1-2"
+N183_wo_trans_dia$years_of_record[N183_wo_trans_dia$Duration>365*2&N183_wo_trans_dia$Duration<365*3+1] = "2-3"
+N183_wo_trans_dia$years_of_record[N183_wo_trans_dia$Duration>365*3&N183_wo_trans_dia$Duration<365*4+1] = "3-4"
+N183_wo_trans_dia$years_of_record[N183_wo_trans_dia$Duration>365*4&N183_wo_trans_dia$Duration<365*5+1] = "4-5"
+N183_wo_trans_dia$years_of_record[N183_wo_trans_dia$Duration>365*5&N183_wo_trans_dia$Duration<365*6+1] = "5-6"
+N183_wo_trans_dia$years_of_record[N183_wo_trans_dia$Duration>365*6&N183_wo_trans_dia$Duration<365*7+1] = "6-7"
+N183_wo_trans_dia$years_of_record[N183_wo_trans_dia$Duration>365*7&N183_wo_trans_dia$Duration<365*8+1] = "7-8"
+N183_wo_trans_dia$years_of_record[N183_wo_trans_dia$Duration>365*8] = ">8"
+
+
+N183_first<-N183_wo_trans_dia%>%group_by(TMA_Acct)%>%arrange(icrd_dt_deidentified)%>%slice(1)
+
+yearofrecord<-data.frame(table(N183_first$years_of_record))
+
+colnames(yearofrecord)<-c("years_of_record","count")
+
+yearofrecord$years_of_record<-factor(yearofrecord$years_of_record,c("<1","1-2","2-3","3-4","4-5","5-6","6-7","7-8",">8"))
+
+
+ggplot(yearofrecord, aes(x=years_of_record, y=count, fill=years_of_record, label=count)) + 
+  geom_bar(stat="identity") +
+  scale_fill_brewer(palette = "Set3") +
+  theme_minimal() +
+  geom_text(size = 3, position = position_stack(vjust = 1.2))
+
+
+
+#length(unique(N183$TMA_Acct[N183_wo_trans_dia$Duration==0]))
+
+#export to csv #start date #2 -year data column
+
+
+```
+
+
+
+
+
+
+```{r}
+#have at least 2-year of data
+N183_2yr<-N183_record%>%filter(Duration>=(365*2))
+#N183_2yr_all <- N183_record%>%filter(Duration>=(365*2))
+#have at least 18-month of data
+#N183_18mnth<-N183_record_wo_trans_dia%>%filter(Duration>=(365+365/2))
+#have at least 1-year of data
+#N183_1yr<-N183_record_wo_trans_dia%>%filter(Duration>=365)
+
+length(unique(N183_2yr$TMA_Acct))
+length(unique(N183_2yr_all$TMA_Acct))
+#length(unique(N183_18mnth$TMA_Acct))
+#length(unique(N183_1yr$TMA_Acct))
+#descriptive data -time to ESRD; 1388-> time to ESRD; 
+#charactertisctis of 9000 (distribution of stages); characteristics of stage 3(average expenses(sd; by categories (total cost, inpatient, etc)); same for ESRD; start with stage3, stage4, 
+
+```
+
+```{r}
+N183_first<-N183_2yr%>%dplyr::group_by(TMA_Acct)%>%dplyr::arrange(icrd_dt_deidentified)%>%dplyr::slice(1)
+
+yearofrecord<-data.frame(table(N183_first$years_of_record))
+
+colnames(yearofrecord)<-c("years_of_record","count")
+
+yearofrecord$years_of_record<-factor(yearofrecord$years_of_record,c("<1","1-2","2-3","3-4","4-5","5-6","6-7","7-8",">8"))
+
+
+ggplot(yearofrecord, aes(x=years_of_record, y=count, fill=years_of_record, label=count)) + 
+  geom_bar(stat="identity") +
+  scale_fill_brewer(palette = "Set3") +
+  theme_minimal() +
+  geom_text(size = 3, position = position_stack(vjust = 1.2))
+
+
+
+length(unique(N183$TMA_Acct[N183_all$Duration==0]))
+
+
+
+
+```
+
+
+
+
+
+
+
+Corresponding years
+```{r}
+N183_first$start_year<-0
+N183_first$start_year[N183_first$icrd_dt_deidentified>0&N183_first$icrd_dt_deidentified<365+1]<-2010
+N183_first$start_year[N183_first$icrd_dt_deidentified>365&N183_first$icrd_dt_deidentified<365*2+1]<-2011
+N183_first$start_year[N183_first$icrd_dt_deidentified>365*2&N183_first$icrd_dt_deidentified<365*3+1]<-2012
+N183_first$start_year[N183_first$icrd_dt_deidentified>365*3&N183_first$icrd_dt_deidentified<365*4+1]<-2013
+N183_first$start_year[N183_first$icrd_dt_deidentified>365*4&N183_first$icrd_dt_deidentified<365*5+1]<-2014
+N183_first$start_year[N183_first$icrd_dt_deidentified>365*5&N183_first$icrd_dt_deidentified<365*6+1]<-2015
+N183_first$start_year[N183_first$icrd_dt_deidentified>365*6&N183_first$icrd_dt_deidentified<365*7+1]<-2016
+N183_first$start_year[N183_first$icrd_dt_deidentified>365*7&N183_first$icrd_dt_deidentified<365*8+1]<-2017
+N183_first$start_year[N183_first$icrd_dt_deidentified>365*8&N183_first$icrd_dt_deidentified<365*9+1]<-2018
+N183_first$start_year[N183_first$icrd_dt_deidentified>365*9&N183_first$icrd_dt_deidentified<365*10+1]<-2019
+N183_first$start_year[N183_first$icrd_dt_deidentified>365*10&N183_first$icrd_dt_deidentified<365*11+1]<-2020
+table(N183_first$start_year)
+N183_first$start_year<-as.factor(N183_first$start_year)
+```
+
+
+```{r}
+ggplot(N183_first, aes(x=start_year, fill=start_year)) + 
+  geom_bar(stat="count") +
+  scale_fill_brewer(palette = "Set3") +
+  theme_minimal() +
+  geom_text(stat='count', aes(label=..count..), vjust=-1)
+
+```
+
+```{r}
+N183_N186_all<-N183_2yr%>%filter(TMA_Acct%in%N186$TMA_Acct)
+length(unique(N183_N186_all$TMA_Acct))
+#N183_N186_2yr<-N183_N186_all%>%filter(Duration>=(365*2))
+#length(unique(N183_N186_2yr$TMA_Acct))
+
+N183_N186_all_patient<-N183_patients%>%filter(TMA_Acct%in%N183_N186_all$TMA_Acct)
+length(unique(N183_N186_all_patient$TMA_Acct))
+names(N183_N186_all_patient)
+
+
+```
+881 patients with N186 starting from N183
+out of 881, 757 patients have over 2-year of records
+
+```{r}
+N186_wo_trans_dia<-N183_wo_trans_dia%>%filter(TMA_Acct%in%N186$TMA_Acct)
+length(unique(N186_wo_trans_dia$TMA_Acct))
+
+N186_all<-N183_patients%>%dplyr::group_by(TMA_Acct)%>%dplyr::mutate(StartDate=min(icrd_dt_deidentified, na.rm = TRUE), EndDate=max(icrd_dt_deidentified,na.rm = TRUE), Duration = EndDate-StartDate)%>%filter(TMA_Acct%in%N186$TMA_Acct)
+length(unique(N186_all$TMA_Acct))
+
+N186_all_wo_trans<-N186_all%>%filter(!TMA_Acct%in%transplant$TMA_Acct)
+length(unique(N186_all_wo_trans$TMA_Acct))
+
+N186_all_wo_trans_dia<-N186_all_wo_trans%>%filter(!TMA_Acct%in%dialysis$TMA_Acct)
+length(unique(N186_all_wo_trans_dia$TMA_Acct))
+
+#N186_all_wo_trans_dia<-N186_all_wo_trans_dia%>%group_by(TMA_Acct)%>%dplyr::mutate(StartDate=min(icrd_dt_deidentified, na.rm = TRUE), EndDate=max(icrd_dt_deidentified,na.rm = TRUE), Duration = EndDate-StartDate)
+
+N186_all_wo_trans_dia_2yr<-N186_all_wo_trans_dia%>%filter(Duration>=(365*2))
+
+length(unique(N186_all_wo_trans_dia_2yr$TMA_Acct))
+```
+
+
+
+```{r}
+N183_N186_first<-N183_N186_all_patient%>%filter(pri_diag_cd=="N186"|admitting_diag_cd=="N186"|dx1=="N186"|dx2=="N186"|dx3=="N186"|dx4=="N186"|dx5=="N186"|dx6=="N186"|dx7=="N186"|dx8=="N186"|dx9=="N186"|dx10=="N186"|dx11=="N186"|dx12=="N186"|dx13=="N186"|dx14=="N186"|dx15=="N186"|dx16=="N186"|dx17=="N186"|dx18=="N186"|dx19=="N186"|dx20=="N186"|dx21=="N186"|dx22=="N186"|dx23=="N186"|dx24=="N186"|pri_diag_cd=="5856"|admitting_diag_cd=="5856"|dx1=="5856"|dx2=="5856"|dx3=="5856"|dx4=="5856"|dx5=="5856"|dx6=="5856"|dx7=="5856"|dx8=="5856"|dx9=="5856"|dx10=="5856"|dx11=="5856"|dx12=="5856"|dx13=="5856"|dx14=="5856"|dx15=="5856"|dx16=="5856"|dx17=="5856"|dx18=="5856"|dx19=="5856"|dx20=="5856"|dx21=="5856"|dx22=="5856"|dx23=="5856"|dx24=="5856")%>%group_by(TMA_Acct)%>%arrange(icrd_dt_deidentified)%>%slice(1)%>%mutate(ESRD_start_date=icrd_dt_deidentified)%>%select(TMA_Acct,ESRD_start_date, eacl_prv_alcrg_at, claim_type)
+
+length(unique(N183_N186_first$TMA_Acct))
+
+
+```
+
+```{r}
+N183_N186_first_N183<-N183_N186_all_patient%>%filter(pri_diag_cd=="N183"|admitting_diag_cd=="N183"|dx1=="N183"|dx2=="N183"|dx3=="N183"|dx4=="N183"|dx5=="N183"|dx6=="N183"|dx7=="N183"|dx8=="N183"|dx9=="N183"|dx10=="N183"|dx11=="N183"|dx12=="N183"|dx13=="N183"|dx14=="N183"|dx15=="N183"|dx16=="N183"|dx17=="N183"|dx18=="N183"|dx19=="N183"|dx20=="N183"|dx21=="N183"|dx22=="N183"|dx23=="N183"|dx24=="N183"|pri_diag_cd=="5853"|admitting_diag_cd=="5853"|dx1=="5853"|dx2=="5853"|dx3=="5853"|dx4=="5853"|dx5=="5853"|dx6=="5853"|dx7=="5853"|dx8=="5853"|dx9=="5853"|dx10=="5853"|dx11=="5853"|dx12=="5853"|dx13=="5853"|dx14=="5853"|dx15=="5853"|dx16=="5853"|dx17=="5853"|dx18=="5853"|dx19=="5853"|dx20=="5853"|dx21=="5853"|dx22=="5853"|dx23=="5853"|dx24=="5853")%>%group_by(TMA_Acct)%>%arrange(icrd_dt_deidentified)%>%slice(1)%>%mutate(stage3_start_date=icrd_dt_deidentified)%>%select(TMA_Acct,stage3_start_date)
+```
+
+
+```{r}
+N183_N186_merged<-merge(N183_N186_first, N183_N186_first_N183, by="TMA_Acct")
+
+N183_N186_merged<-N183_N186_merged%>%group_by(TMA_Acct)%>%mutate(time_to_ESRD=ESRD_start_date-stage3_start_date)
+
+N183_N186_merged_less_than_2_yr<-N183_N186_merged%>%filter(time_to_ESRD<=365*2)
+
+N183_N186_merged_more_than_2yr<-N183_N186_merged%>%filter(time_to_ESRD>=365*2+1)
+
+length(unique(N183_N186_merged_more_than_2yr$TMA_Acct))
+
+```
+Exclude patients who developed ESRD within 2 years
+```{r}
+final_data_record<-N183_2yr%>%filter(!TMA_Acct%in%N183_N186_merged_less_than_2_yr$TMA_Acct)
+length(unique(final_data_record$TMA_Acct))
+
+
+
+final_data<-N183_patients%>%filter(TMA_Acct%in%final_data_record$TMA_Acct)
+length(unique(final_data$TMA_Acct))
+
+
+```
+
+
+```{r}
+
+final_N183_first<-final_data%>%filter(pri_diag_cd=="N183"|admitting_diag_cd=="N183"|dx1=="N183"|dx2=="N183"|dx3=="N183"|dx4=="N183"|dx5=="N183"|dx6=="N183"|dx7=="N183"|dx8=="N183"|dx9=="N183"|dx10=="N183"|dx11=="N183"|dx12=="N183"|dx13=="N183"|dx14=="N183"|dx15=="N183"|dx16=="N183"|dx17=="N183"|dx18=="N183"|dx19=="N183"|dx20=="N183"|dx21=="N183"|dx22=="N183"|dx23=="N183"|dx24=="N183"|pri_diag_cd=="5853"|admitting_diag_cd=="5853"|dx1=="5853"|dx2=="5853"|dx3=="5853"|dx4=="5853"|dx5=="5853"|dx6=="5853"|dx7=="5853"|dx8=="5853"|dx9=="5853"|dx10=="5853"|dx11=="5853"|dx12=="5853"|dx13=="5853"|dx14=="5853"|dx15=="5853"|dx16=="5853"|dx17=="5853"|dx18=="5853"|dx19=="5853"|dx20=="5853"|dx21=="5853"|dx22=="5853"|dx23=="5853"|dx24=="5853")%>%group_by(TMA_Acct)%>%arrange(icrd_dt_deidentified)%>%slice(1)%>%mutate(stage3_start_date=icrd_dt_deidentified)%>%select(TMA_Acct,stage3_start_date)
+
+length((unique(final_N183_first$TMA_Acct)))
+
+```
+
+
+
+
+
+
+
+```{r}
+final_N183_first$N183_start_year<-0
+final_N183_first$N183_start_year[final_N183_first$stage3_start_date>0&final_N183_first$stage3_start_date<365+1]<-2010
+final_N183_first$N183_start_year[final_N183_first$stage3_start_date>365&final_N183_first$stage3_start_date<365*2+1]<-2011
+final_N183_first$N183_start_year[final_N183_first$stage3_start_date>365*2&final_N183_first$stage3_start_date<365*3+1]<-2012
+final_N183_first$N183_start_year[final_N183_first$stage3_start_date>365*3&final_N183_first$stage3_start_date<365*4+1]<-2013
+final_N183_first$N183_start_year[final_N183_first$stage3_start_date>365*4&final_N183_first$stage3_start_date<365*5+1]<-2014
+final_N183_first$N183_start_year[final_N183_first$stage3_start_date>365*5&final_N183_first$stage3_start_date<365*6+1]<-2015
+final_N183_first$N183_start_year[final_N183_first$stage3_start_date>365*6&final_N183_first$stage3_start_date<365*7+1]<-2016
+final_N183_first$N183_start_year[final_N183_first$stage3_start_date>365*7&final_N183_first$stage3_start_date<365*8+1]<-2017
+final_N183_first$N183_start_year[final_N183_first$stage3_start_date>365*8&final_N183_first$stage3_start_date<365*9+1]<-2018
+final_N183_first$N183_start_year[final_N183_first$stage3_start_date>365*9&final_N183_first$stage3_start_date<365*10+1]<-2019
+final_N183_first$N183_start_year[final_N183_first$stage3_start_date>365*10&final_N183_first$stage3_start_date<365*11+1]<-2020
+
+table(final_N183_first$N183_start_year)
+final_N183_first$N183_start_year<-as.factor(final_N183_first$N183_start_year)
+names(final_N183_first)[3]<-"stage3_start_year"
+
+```
+
+
+
+```{r}
+N183_N186_merged_more_than_2yr$N186_start_year<-0
+N183_N186_merged_more_than_2yr$N186_start_year[N183_N186_merged_more_than_2yr$ESRD_start_date>0&N183_N186_merged_more_than_2yr$ESRD_start_date<365+1]<-2010
+N183_N186_merged_more_than_2yr$N186_start_year[N183_N186_merged_more_than_2yr$ESRD_start_date>365&N183_N186_merged_more_than_2yr$ESRD_start_date<365*2+1]<-2011
+N183_N186_merged_more_than_2yr$N186_start_year[N183_N186_merged_more_than_2yr$ESRD_start_date>365*2&N183_N186_merged_more_than_2yr$ESRD_start_date<365*3+1]<-2012
+N183_N186_merged_more_than_2yr$N186_start_year[N183_N186_merged_more_than_2yr$ESRD_start_date>365*3&N183_N186_merged_more_than_2yr$ESRD_start_date<365*4+1]<-2013
+N183_N186_merged_more_than_2yr$N186_start_year[N183_N186_merged_more_than_2yr$ESRD_start_date>365*4&N183_N186_merged_more_than_2yr$ESRD_start_date<365*5+1]<-2014
+N183_N186_merged_more_than_2yr$N186_start_year[N183_N186_merged_more_than_2yr$ESRD_start_date>365*5&N183_N186_merged_more_than_2yr$ESRD_start_date<365*6+1]<-2015
+N183_N186_merged_more_than_2yr$N186_start_year[N183_N186_merged_more_than_2yr$ESRD_start_date>365*6&N183_N186_merged_more_than_2yr$ESRD_start_date<365*7+1]<-2016
+N183_N186_merged_more_than_2yr$N186_start_year[N183_N186_merged_more_than_2yr$ESRD_start_date>365*7&N183_N186_merged_more_than_2yr$ESRD_start_date<365*8+1]<-2017
+N183_N186_merged_more_than_2yr$N186_start_year[N183_N186_merged_more_than_2yr$ESRD_start_date>365*8&N183_N186_merged_more_than_2yr$ESRD_start_date<365*9+1]<-2018
+N183_N186_merged_more_than_2yr$N186_start_year[N183_N186_merged_more_than_2yr$ESRD_start_date>365*9&N183_N186_merged_more_than_2yr$ESRD_start_date<365*10+1]<-2019
+N183_N186_merged_more_than_2yr$N186_start_year[N183_N186_merged_more_than_2yr$ESRD_start_date>365*10&N183_N186_merged_more_than_2yr$ESRD_start_date<365*11+1]<-2020
+
+table(N183_N186_merged_more_than_2yr$N186_start_year)
+N183_N186_merged_more_than_2yr$N186_start_year<-as.factor(N183_N186_merged_more_than_2yr$N186_start_year)
+#names(N186_start_year)[3]<-"stage3_start_year"
+
+```
+
+```{r}
+ggplot(N183_N186_merged_more_than_2yr, aes(x=N186_start_year, fill=N186_start_year)) + 
+  geom_bar(stat="count") +
+  scale_fill_brewer(palette = "Set3") +
+  theme_minimal() +
+  geom_text(stat='count', aes(label=..count..), vjust=-1) +
+  xlab("ESRD start year") +
+  ylab("number of patients") 
+
+```
+total # of patients in each year
+```{r}
+
+final_data_record$year<-0
+final_data_record$year[final_data_record$icrd_dt_deidentified>0&final_data_record$icrd_dt_deidentified<365+1]<-2010
+final_data_record$year[final_data_record$icrd_dt_deidentified>365&final_data_record$icrd_dt_deidentified<365*2+1]<-2011
+final_data_record$year[final_data_record$icrd_dt_deidentified>365*2&final_data_record$icrd_dt_deidentified<365*3+1]<-2012
+final_data_record$year[final_data_record$icrd_dt_deidentified>365*3&final_data_record$icrd_dt_deidentified<365*4+1]<-2013
+final_data_record$year[final_data_record$icrd_dt_deidentified>365*4&final_data_record$icrd_dt_deidentified<365*5+1]<-2014
+final_data_record$year[final_data_record$icrd_dt_deidentified>365*5&final_data_record$icrd_dt_deidentified<365*6+1]<-2015
+final_data_record$year[final_data_record$icrd_dt_deidentified>365*6&final_data_record$icrd_dt_deidentified<365*7+1]<-2016
+final_data_record$year[final_data_record$icrd_dt_deidentified>365*7&final_data_record$icrd_dt_deidentified<365*8+1]<-2017
+final_data_record$year[final_data_record$icrd_dt_deidentified>365*8&final_data_record$icrd_dt_deidentified<365*9+1]<-2018
+final_data_record$year[final_data_record$icrd_dt_deidentified>365*9&final_data_record$icrd_dt_deidentified<365*10+1]<-2019
+final_data_record$year[final_data_record$icrd_dt_deidentified>365*10&final_data_record$icrd_dt_deidentified<365*11+1]<-2020
+
+
+
+```
+```{r}
+final_data_record$year<-as.factor(final_data_record$year)
+
+final_data_record%>%group_by(year) %>% summarize(n=n_distinct(TMA_Acct))%>%
+ggplot(.,aes(x=year, y=n, fill=year)) +
+  geom_bar(stat="identity") +
+  scale_fill_brewer(palette = "Set3") +
+  theme_minimal() +
+  geom_text(stat='identity', aes(label=n), vjust=-1) +
+  xlab("year") +
+  ylab("number of patients") 
+
+```
+
+```{r}
+N183_N186_first$ESRD_start_year<-0
+N183_N186_first$ESRD_start_year[N183_N186_first$icrd_dt_deidentified>0&N183_N186_first$icrd_dt_deidentified<365+1]<-2010
+N183_N186_first$ESRD_start_year[N183_N186_first$icrd_dt_deidentified>365&N183_N186_first$icrd_dt_deidentified<365*2+1]<-2011
+N183_N186_first$ESRD_start_year[N183_N186_first$icrd_dt_deidentified>365*2&N183_N186_first$icrd_dt_deidentified<365*3+1]<-2012
+N183_N186_first$ESRD_start_year[N183_N186_first$icrd_dt_deidentified>365*3&N183_N186_first$icrd_dt_deidentified<365*4+1]<-2013
+N183_N186_first$ESRD_start_year[N183_N186_first$icrd_dt_deidentified>365*4&N183_N186_first$icrd_dt_deidentified<365*5+1]<-2014
+N183_N186_first$ESRD_start_year[N183_N186_first$icrd_dt_deidentified>365*5&N183_N186_first$icrd_dt_deidentified<365*6+1]<-2015
+N183_N186_first$ESRD_start_year[N183_N186_first$icrd_dt_deidentified>365*6&N183_N186_first$icrd_dt_deidentified<365*7+1]<-2016
+N183_N186_first$ESRD_start_year[N183_N186_first$icrd_dt_deidentified>365*7&N183_N186_first$icrd_dt_deidentified<365*8+1]<-2017
+N183_N186_first$ESRD_start_year[N183_N186_first$icrd_dt_deidentified>365*8&N183_N186_first$icrd_dt_deidentified<365*9+1]<-2018
+N183_N186_first$ESRD_start_year[N183_N186_first$icrd_dt_deidentified>365*9&N183_N186_first$icrd_dt_deidentified<365*10+1]<-2019
+N183_N186_first$ESRD_start_year[N183_N186_first$icrd_dt_deidentified>365*10&N183_N186_first$icrd_dt_deidentified<365*11+1]<-2020
+
+table(N183_N186_first$ESRD_start_year)
+N183_N186_first$ESRD_start_year<-as.factor(N183_N186_first$ESRD_start_year)
+
+```
+
+
+```{r}
+ggplot(N183_N186_first, aes(x=ESRD_start_year, fill=ESRD_start_year)) + 
+  geom_bar(stat="count") +
+  scale_fill_brewer(palette = "Set3") +
+  theme_minimal() +
+  geom_text(stat='count', aes(label=..count..), vjust=-1)
+
+```
+
+
+
+
+time to esrd
+```{r}
+length(unique(N183_N186_first$TMA_Acct))
+N183_N186_first<-N183_N186_first%>%group_by(TMA_Acct)%>%mutate(time_to_ESRD=icrd_dt_deidentified-)
+summary(N183_N186_first$time_to_ESRD)
+sd(N183_N186_first$time_to_ESRD)
+N183_N186_first %>%
+  ggplot( aes(x=time_to_ESRD)) +
+    geom_histogram( binwidth=15, fill="#69b3a2", color="#e9ecef", alpha=0.9) +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size=15)
+    )
+
+
+
+```
+```{r}
+
+N183_N186_merged$year_to_ESRD<-0
+N183_N186_merged$year_to_ESRD[N183_N186_merged$time_to_ESRD>0&N183_N186_merged$time_to_ESRD<365+1]<-1
+N183_N186_merged$year_to_ESRD[N183_N186_merged$time_to_ESRD>365&N183_N186_merged$time_to_ESRD<365*2+1]<-2
+N183_N186_merged$year_to_ESRD[N183_N186_merged$time_to_ESRD>365*2&N183_N186_merged$time_to_ESRD<365*3+1]<-3
+N183_N186_merged$year_to_ESRD[N183_N186_merged$time_to_ESRD>365*3&N183_N186_merged$time_to_ESRD<365*4+1]<-4
+N183_N186_merged$year_to_ESRD[N183_N186_merged$time_to_ESRD>365*4&N183_N186_merged$time_to_ESRD<365*5+1]<-5
+N183_N186_merged$year_to_ESRD[N183_N186_merged$time_to_ESRD>365*5&N183_N186_merged$time_to_ESRD<365*6+1]<-6
+N183_N186_merged$year_to_ESRD[N183_N186_merged$time_to_ESRD>365*6&N183_N186_merged$time_to_ESRD<365*7+1]<-7
+N183_N186_merged$year_to_ESRD[N183_N186_merged$time_to_ESRD>365*7&N183_N186_merged$time_to_ESRD<365*8+1]<-8
+N183_N186_merged$year_to_ESRD[N183_N186_merged$time_to_ESRD>365*8&N183_N186_merged$time_to_ESRD<365*9+1]<-9
+N183_N186_merged$year_to_ESRD[N183_N186_merged$time_to_ESRD>365*9&N183_N186_merged$time_to_ESRD<365*10+1]<-10
+N183_N186_merged$year_to_ESRD[N183_N186_merged$time_to_ESRD>365*10&N183_N186_merged$time_to_ESRD<365*11+1]<-11
+N183_N186_merged$year_to_ESRD<-as.factor(N183_N186_merged$year_to_ESRD)
+```
+
+```{r}
+ggplot(N183_N186_merged, aes(x=year_to_ESRD, fill=year_to_ESRD)) + 
+  geom_bar(stat="count") +
+  scale_fill_brewer(palette = "Set3") +
+  theme_minimal() +
+  geom_text(stat='count', aes(label=..count..), vjust=-1)
+
+
+mean(N183_N186_merged$time_to_ESRD)
+sd(N183_N186_merged$time_to_ESRD)
+
+```
+```{r}
+mean(N183_N186_first$time_to_ESRD)
+1617.297/365
+sd(N183_N186_first$time_to_ESRD)
+894.2366/365
+```
+
+
+```{r}
+#N183_N186_2yr
+table(N183_N186_merged_more_than_2yr$claim_type)
+N183_N186_merged_more_than_2yr$claim_type<-as.factor(N183_N186_merged_more_than_2yr$claim_type)
+ggplot(final_data, aes(x=claim_type, fill=claim_type)) + 
+  geom_bar(stat="count") +
+  scale_fill_brewer(palette = "Set3") +
+  theme_minimal() +
+  geom_text(stat='count', aes(label=..count..), vjust=-1) +
+  ylab("number of claim records")
+```
+
+```{r}
+final_data %>% filter(eacl_prv_alcrg_at<2000) %>%
+  ggplot( aes(x=claim_type, y=eacl_prv_alcrg_at, fill=claim_type)) +
+    geom_boxplot() +
+    scale_fill_brewer(palette = "Set3") +
+    theme_minimal() +
+    theme(
+      legend.position="none",
+      plot.title = element_text(size=11)
+    ) +
+    ggtitle("A boxplot with jitter") +
+    ylab("cost") + xlab("claim type") 
+
+```
+
+time to ESRD
+```{r}
+
+N183_N186_all<-N183_N186_all%>%filter(ESRD==1)%>%group_by(TMA_Acct)%>%mutate(ESRD_start_date=min(icrd_dt_deidentified))
+
+```
+
+```{r}
+N183_N186_all%>%filter(ESRD_start_date>stage3_start_date)
+
+```
+
+```{r}
+N183_N186_all<-N183_N186_all%>%group_by(TMA_Acct)%>%mutate(time_to_ESRD=ESRD_start_date-stage3_start_date)
+
+```
+
+
+```{r}
+df_merged<-merge(N183,N186,by="TMA_Acct")
+length(unique(df$TMA_Acct))
+length(unique(df_merged$TMA_Acct))
+length(unique(N183$TMA_Acct))
+length(unique(N186$TMA_Acct))
+```
+
+```{r}
+#have at least 2-year of data
+df_merged_2yr<-df_merged%>%filter(Duration>=(365*2))
+#have at least 18-month of data
+df_merged_18mnth<-df_merged%>%filter(Duration>=(365+365/2))
+#have at least 1-year of data
+df_merged_1yr<-df_merged%>%filter(Duration>=365)
+
+df_merged_less1yr<-df_merged%>%filter(Duration<365)
+
+```
+
+```{r}
+length(unique(df_merged_2yr$TMA_Acct))
+length(unique(df_merged_18mnth$TMA_Acct))
+length(unique(df_merged_1yr$TMA_Acct))
+length(unique(df_merged_less1yr$TMA_Acct))
+```
+
+
+
+time to ESRD
+
+```{r}
+df_merged<-df_merged%>%dplyr::select(TMA_Acct,icrd_dt_deidentified.x,icrd_dt_deidentified.y,stage3,ESRD,claim_type.x,eacl_prv_alcrg_at.x)
+
+df_merged<-df_merged%>%dplyr::group_by(TMA_Acct)%>%dplyr::filter(stage3==1)%>%dplyr::mutate(stage3_first_occ=min(icrd_dt_deidentified.x,na.rm=TRUE))
+
+df_merged<-df_merged%>%dplyr::group_by(TMA_Acct)%>%dplyr::filter(ESRD==1)%>%dplyr::mutate(ESRD_first_occ=min(icrd_dt_deidentified.y,na.rm=TRUE))
+
+df_merged<-df_merged%>%dplyr::group_by(TMA_Acct)%>%mutate(time_to_ESRD=ESRD_first_occ-stage3_first_occ)
+
+summary(df_merged$time_to_ESRD)
+sd(df_merged$time_to_ESRD)
+
+```
+
+```{r}
+ggplot(df_merged, aes(x=claim_type.x, fill=claim_type.x)) + 
+  geom_bar(stat="count") +
+  scale_fill_brewer(palette = "Set3") +
+  theme_minimal() +
+  geom_text(stat='count', aes(label=..count..), vjust=-1)
+
+```
+
+
+
+```{r}
+df$stage_3
+
+```
+
+
+
+
+
+```{r}
+df<-df%>%filter(icrd_dt_deidentified<=3284)
+df$ESRD=0
+df$ESRD[df$pri_diag_cd=="N186"|df$admitting_diag_cd=="N186"|df$dx1=="N186"|df$dx2=="N186"|df$dx3=="N186"|df$dx4=="N186"|df$dx5=="N186"|df$dx6=="N186"|df$dx7=="N186"|df$dx8=="N186"|df$dx9=="N186"|df$dx10=="N186"|df$dx11=="N186"|df$dx12=="N186"|df$dx13=="N186"|df$dx14=="N186"|df$dx15=="N186"|df$dx16=="N186"|df$dx17=="N186"|df$dx18=="N186"|df$dx19=="N186"|df$dx20=="N186"|df$dx21=="N186"|df$dx22=="N186"|df$dx23=="N186"|df$dx24=="N186"|df$dx25=="N186"|df$dx26=="N186"|df$pri_diag_cd=="5856"|df$admitting_diag_cd=="5856"|df$dx1=="5856"|df$dx2=="5856"|df$dx3=="5856"|df$dx4=="5856"|df$dx5=="5856"|df$dx6=="5856"|df$dx7=="5856"|df$dx8=="5856"|df$dx9=="5856"|df$dx10=="5856"|df$dx11=="5856"|df$dx12=="5856"|df$dx13=="5856"|df$dx14=="5856"|df$dx15=="5856"|df$dx16=="5856"|df$dx17=="5856"|df$dx18=="5856"|df$dx19=="5856"|df$dx20=="5856"|df$dx21=="5856"|df$dx22=="5856"|df$dx23=="5856"|df$dx24=="5856"|df$dx25=="5856"|df$dx26=="5856"]=1
+
+length(unique(df$TMA_Acct[df$ESRD==1]))
+
+```
+
+```{r}
+df$stage_3=0
+df$stage_3[df$pri_diag_cd=="N183"|df$admitting_diag_cd=="N183"|df$dx1=="N183"|df$dx2=="N183"|df$dx3=="N183"|df$dx4=="N183"|df$dx5=="N183"|df$dx6=="N183"|df$dx7=="N183"|df$dx8=="N183"|df$dx9=="N183"|df$dx10=="N183"|df$dx11=="N183"|df$dx12=="N183"|df$dx13=="N183"|df$dx14=="N183"|df$dx15=="N183"|df$dx16=="N183"|df$dx17=="N183"|df$dx18=="N183"|df$dx19=="N183"|df$dx20=="N183"|df$dx21=="N183"|df$dx22=="N183"|df$dx23=="N183"|df$dx24=="N183"|df$dx25=="N183"|df$dx26=="N183"|df$pri_diag_cd=="5853"|df$admitting_diag_cd=="5853"|df$dx1=="5853"|df$dx2=="5853"|df$dx3=="5853"|df$dx4=="5853"|df$dx5=="5853"|df$dx6=="5853"|df$dx7=="5853"|df$dx8=="5853"|df$dx9=="5853"|df$dx10=="5853"|df$dx11=="5853"|df$dx12=="5853"|df$dx13=="5853"|df$dx14=="5853"|df$dx15=="5853"|df$dx16=="5853"|df$dx17=="5853"|df$dx18=="5853"|df$dx19=="5853"|df$dx20=="5853"|df$dx21=="5853"|df$dx22=="5853"|df$dx23=="5853"|df$dx24=="5853"|df$dx25=="5853"|df$dx26=="5853"]=1
+
+length(unique(df$TMA_Acct[df$stage_3==1]))
+
+
+```
+
+```{r}
+df$stage_4=0
+df$stage_4[df$pri_diag_cd=="N184"|df$admitting_diag_cd=="N184"|df$dx1=="N184"|df$dx2=="N184"|df$dx3=="N184"|df$dx4=="N184"|df$dx5=="N184"|df$dx6=="N184"|df$dx7=="N184"|df$dx8=="N184"|df$dx9=="N184"|df$dx10=="N184"|df$dx11=="N184"|df$dx12=="N184"|df$dx13=="N184"|df$dx14=="N184"|df$dx15=="N184"|df$dx16=="N184"|df$dx17=="N184"|df$dx18=="N184"|df$dx19=="N184"|df$dx20=="N184"|df$dx21=="N184"|df$dx22=="N184"|df$dx23=="N184"|df$dx24=="N184"|df$dx25=="N184"|df$dx26=="N184"|df$pri_diag_cd=="5854"|df$admitting_diag_cd=="5854"|df$dx1=="5854"|df$dx2=="5854"|df$dx3=="5854"|df$dx4=="5854"|df$dx5=="5854"|df$dx6=="5854"|df$dx7=="5854"|df$dx8=="5854"|df$dx9=="5854"|df$dx10=="5854"|df$dx11=="5854"|df$dx12=="5854"|df$dx13=="5854"|df$dx14=="5854"|df$dx15=="5854"|df$dx16=="5854"|df$dx17=="5854"|df$dx18=="5854"|df$dx19=="5854"|df$dx20=="5854"|df$dx21=="5854"|df$dx22=="5854"|df$dx23=="5854"|df$dx24=="5854"|df$dx25=="5854"|df$dx26=="5854"]=1
+
+length(unique(df$TMA_Acct[df$stage_4==1]))
+
+
+```
+
+```{r}
+df$stage_5=0
+df$stage_5[df$pri_diag_cd=="N185"|df$admitting_diag_cd=="N185"|df$dx1=="N185"|df$dx2=="N185"|df$dx3=="N185"|df$dx4=="N185"|df$dx5=="N185"|df$dx6=="N185"|df$dx7=="N185"|df$dx8=="N185"|df$dx9=="N185"|df$dx10=="N185"|df$dx11=="N185"|df$dx12=="N185"|df$dx13=="N185"|df$dx14=="N185"|df$dx15=="N185"|df$dx16=="N185"|df$dx17=="N185"|df$dx18=="N185"|df$dx19=="N185"|df$dx20=="N185"|df$dx21=="N185"|df$dx22=="N185"|df$dx23=="N185"|df$dx24=="N185"|df$dx25=="N185"|df$dx26=="N185"|df$pri_diag_cd=="5855"|df$admitting_diag_cd=="5855"|df$dx1=="5855"|df$dx2=="5855"|df$dx3=="5855"|df$dx4=="5855"|df$dx5=="5855"|df$dx6=="5855"|df$dx7=="5855"|df$dx8=="5855"|df$dx9=="5855"|df$dx10=="5855"|df$dx11=="5855"|df$dx12=="5855"|df$dx13=="5855"|df$dx14=="5855"|df$dx15=="5855"|df$dx16=="5855"|df$dx17=="5855"|df$dx18=="5855"|df$dx19=="5855"|df$dx20=="5855"|df$dx21=="5855"|df$dx22=="5855"|df$dx23=="5855"|df$dx24=="5855"|df$dx25=="5855"|df$dx26=="5855"]=1
+
+length(unique(df$TMA_Acct[df$stage_5==1]))
+min(df$icrd_dt_deidentified,na.rm = TRUE)
+
+
+```
+
+```{r}
+df$CKD<-0
+df$CKD[df$stage_3==1]<-3
+df$CKD[df$stage_4==1]<-4
+df$CKD[df$stage_5==1]<-5
+df$CKD[df$ESRD==1]<-6
+
+#df<-df%>%dplyr::group_by(TMA_Acct)%>%dplyr::mutate(CKD_final=max(CKD,na.rm=TRUE))
+
+#table(df$CKD_final)
+```
+
+
+
+
+
+```{r}
+CKD_stage<-df%>%dplyr::group_by(TMA_Acct)%>%dplyr::mutate(CKD_final=max(CKD,na.rm=TRUE))%>%dplyr::arrange(desc(icrd_dt_deidentified))%>%dplyr::slice(1)%>%select(TMA_Acct,CKD_final,icrd_dt_deidentified,eacl_prv_alcrg_at,claim_type)
+
+table(CKD_stage$CKD_final)
+CKD_stage$CKD_final[is.na(CKD_stage$CKD_final)]="non-CKD"
+CKD_stage$CKD_final[CKD_stage$CKD_final==3]="stage3"
+CKD_stage$CKD_final[CKD_stage$CKD_final==4]="stage4"
+CKD_stage$CKD_final[CKD_stage$CKD_final==5]="stage5"
+CKD_stage$CKD_final[CKD_stage$CKD_final==6]="ESRD"
+
+CKD_stage$CKD_final<-factor(CKD_stage$CKD_final,c("non-CKD","stage3","stage4","stage5","ESRD"))
+ggplot(CKD_stage, aes(x=CKD_final, fill=CKD_final)) + 
+  geom_bar(stat="count") +
+  scale_fill_brewer(palette = "Set3") +
+  theme_minimal() +
+  geom_text(stat='count', aes(label=..count..), vjust=-1)
+```
+
+```{r}
+df$CKD[df$CKD==0]="non-CKD"
+df$CKD[df$CKD==3]="stage3"
+df$CKD[df$CKD==4]="stage4"
+df$CKD[df$CKD==5]="stage5"
+df$CKD[df$CKD==6]="ESRD"
+
+df$CKD<-factor(df$CKD,c("non-CKD","stage3","stage4","stage5","ESRD"))
+df%>%dplyr::group_by(CKD)%>%dplyr::summarize(mean_cost=mean(eacl_prv_alcrg_at),sd_cost=sd(eacl_prv_alcrg_at))
+
+length(unique())
+
+
+```
+
+```{r}
+df%>%dplyr::group_by(line_number)%>%ggplot(aes(x=claim_type, fill=claim_type)) + 
+  geom_bar(stat="count") +
+  scale_fill_brewer(palette = "Set3") +
+  theme_minimal() +
+  geom_text(stat='count', aes(label=..count..), vjust=-1)
+
+```
+```{r}
+single_patient<-df%>%filter(TMA_Acct==37)%>%select(-X1)
+names(single_patient)
+
+#prin_proc_mod - additional info #diagnosis code targeting disease
+#count of er visits - place of service
+
+
+```
+
+
+
+
+```{r}
+N183_first<-unique(N183)
+table(N183_first$claim_type)
+N183_first%>%ggplot(aes(as.factor(claim_type), fill = as.factor(claim_type))) +
+  labs(title = 'Distribution of claim_type', x = 'claim_type', y = 'Count') +
+  geom_bar(stat = 'count', width = 0.5,alpha=0.8)
+```
+
+
+```{r}
+mean(N183_first$eacl_prv_alcrg_at)
+sd(N183_first$eacl_prv_alcrg_at)
+
+
+# Make the histogram
+N183_first %>%
+  ggplot(aes(x=eacl_prv_alcrg_at)) +
+    geom_density(fill="#69b3a2", color="#e9ecef", alpha=0.8) +xlim(0,5000)
+```
+
+```{r}
+table(N183_first$admission_type)
+N183_first%>%ggplot(aes(as.factor(admission_type), fill = as.factor(admission_type))) +
+  labs(title = 'Distribution of admission_type', x = 'admission_type', y = 'Count') +
+  geom_bar(stat = 'count', width = 0.5,alpha=0.8)
+```
+```{r}
+table(N183_first$discharge_status)
+N183_first%>%ggplot(aes(as.factor(discharge_status), fill = as.factor(discharge_status))) +
+  labs(title = 'Distribution of discharge_status', x = 'discharge_status', y = 'Count') +
+  geom_bar(stat = 'count', width = 0.5,alpha=0.8)
+```
+
+
+
+
+
+
